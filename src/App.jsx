@@ -1,9 +1,15 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { QRCodeSVG } from "qrcode.react";
-import { PieChart, Pie, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer, AreaChart, Area, CartesianGrid } from "recharts";
 import {
-  lsGet, lsSet, getUsers, saveUsers, getSession, saveSession, clearSession,
-  generateSecret, verifyTOTP, totpUri, generateRecoveryCodes, generateId, findUser,
+  PieChart, Pie, Cell, XAxis, YAxis, Tooltip,
+  ResponsiveContainer, AreaChart, Area, CartesianGrid,
+} from "recharts";
+import {
+  hashPassword, getSession, saveSession, clearSession,
+  findUser, createUser, updateUser,
+  loadTransactions, upsertTransaction, deleteTransaction,
+  generateSecret, verifyTOTP, totpUri,
+  generateRecoveryCodes, generateId,
 } from "./auth.js";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -12,122 +18,113 @@ const CATEGORIES = {
   despesa: ["Moradia", "Alimentação", "Transporte", "Saúde", "Educação", "Lazer", "Assinaturas", "Outros"],
 };
 const CATEGORY_ICONS = {
-  "Salário": "💰", "Freelance": "💻", "Investimentos": "📈", "Vendas": "🛒",
-  "Moradia": "🏠", "Alimentação": "🍽️", "Transporte": "🚗", "Saúde": "🏥",
-  "Educação": "📚", "Lazer": "🎮", "Assinaturas": "📱", "Outros": "📦",
+  "Salário":"💰","Freelance":"💻","Investimentos":"📈","Vendas":"🛒",
+  "Moradia":"🏠","Alimentação":"🍽️","Transporte":"🚗","Saúde":"🏥",
+  "Educação":"📚","Lazer":"🎮","Assinaturas":"📱","Outros":"📦",
 };
 const COLORS = ["#E8C547","#D4A03E","#C17B35","#AE562C","#6B8F71","#4A7C59","#2D6A4F","#1B4332","#8B6914","#A67C00","#BF9B30","#D4B44A"];
 const MONTHS = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"];
 
-function formatCurrency(v) { return new Intl.NumberFormat("pt-BR",{style:"currency",currency:"BRL"}).format(v); }
-function formatDate(s) { return new Date(s+"T00:00:00").toLocaleDateString("pt-BR",{day:"2-digit",month:"short"}); }
+function formatCurrency(v) {
+  return new Intl.NumberFormat("pt-BR",{style:"currency",currency:"BRL"}).format(v);
+}
+function formatDate(s) {
+  return new Date(s+"T00:00:00").toLocaleDateString("pt-BR",{day:"2-digit",month:"short"});
+}
 
 // ─── Shared UI ────────────────────────────────────────────────────────────────
 const BASE_INPUT = {
-  background:"#111110", border:"1px solid #333328", borderRadius:8,
-  padding:"11px 14px", color:"#E8E4D9", fontSize:14, width:"100%",
-  outline:"none", fontFamily:"'DM Sans',sans-serif", boxSizing:"border-box",
+  background:"#111110",border:"1px solid #333328",borderRadius:8,
+  padding:"11px 14px",color:"#E8E4D9",fontSize:14,width:"100%",
+  outline:"none",fontFamily:"'DM Sans',sans-serif",boxSizing:"border-box",
 };
 
-function Input({ label, error, ...props }) {
+function Input({ label, error, style: extra, ...props }) {
   return (
     <div>
       {label && <label style={{fontSize:11,color:"#888",marginBottom:6,display:"block",letterSpacing:1}}>{label}</label>}
-      <input {...props} style={{...BASE_INPUT, border:`1px solid ${error?"#c44":"#333328"}`, ...props.style}} />
+      <input {...props} style={{...BASE_INPUT,border:`1px solid ${error?"#c44":"#333328"}`,...extra}}/>
       {error && <div style={{color:"#e07070",fontSize:12,marginTop:5}}>{error}</div>}
     </div>
   );
 }
 
-function Btn({ children, variant="gold", disabled, onClick, type="button", style={} }) {
-  const variants = {
-    gold: { background:"linear-gradient(135deg,#E8C547,#D4A03E)", color:"#0E0E0C" },
-    ghost: { background:"transparent", color:"#888", border:"1px solid #333328" },
-    danger: { background:"transparent", color:"#e07070", border:"1px solid #441111" },
-    green: { background:"#2D6A4F", color:"#fff" },
+function Btn({ children, variant="gold", disabled, onClick, type="button", full=true }) {
+  const base = {border:"none",borderRadius:8,padding:"12px 20px",fontSize:14,cursor:disabled?"not-allowed":"pointer",fontWeight:700,fontFamily:"'DM Sans',sans-serif",opacity:disabled?0.6:1,transition:"opacity 0.2s",width:full?"100%":"auto"};
+  const vs = {
+    gold:{...base,background:"linear-gradient(135deg,#E8C547,#D4A03E)",color:"#0E0E0C"},
+    ghost:{...base,background:"transparent",color:"#888",border:"1px solid #333328"},
+    danger:{...base,background:"transparent",color:"#e07070",border:"1px solid #441111"},
   };
-  return (
-    <button type={type} onClick={onClick} disabled={disabled} style={{
-      ...variants[variant], border:"none", borderRadius:8,
-      padding:"12px 20px", fontSize:14, cursor:disabled?"not-allowed":"pointer",
-      fontWeight:700, fontFamily:"'DM Sans',sans-serif", opacity:disabled?0.6:1,
-      transition:"all 0.2s", width:"100%", ...style, ...variants[variant],
-    }}>{children}</button>
-  );
+  return <button type={type} onClick={onClick} disabled={disabled} style={vs[variant]||vs.gold}>{children}</button>;
 }
 
 function Alert({ children, type="error" }) {
-  const colors = { error:["rgba(200,60,60,0.1)","rgba(200,60,60,0.3)","#e07070"], info:["rgba(232,197,71,0.08)","rgba(232,197,71,0.2)","#E8C547"] };
-  const [bg, border, color] = colors[type];
-  return (
-    <div style={{background:bg, border:`1px solid ${border}`, borderRadius:8, padding:"10px 14px", color, fontSize:13}}>
-      {children}
-    </div>
-  );
+  const s = {error:["rgba(200,60,60,0.1)","rgba(200,60,60,0.3)","#e07070"],info:["rgba(232,197,71,0.08)","rgba(232,197,71,0.2)","#E8C547"]};
+  const [bg,bdr,color] = s[type]||s.error;
+  return <div style={{background:bg,border:`1px solid ${bdr}`,borderRadius:8,padding:"10px 14px",color,fontSize:13}}>{children}</div>;
 }
 
-function AuthCard({ children, title, subtitle }) {
+function AuthCard({ children, subtitle, title }) {
   return (
     <div style={{minHeight:"100vh",background:"#0E0E0C",display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"'DM Sans',sans-serif",padding:16}}>
       <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet"/>
       <div style={{background:"#1A1A16",border:"1px solid #333328",borderRadius:20,width:"min(420px,100%)",boxShadow:"0 24px 80px rgba(0,0,0,0.6)",overflow:"hidden"}}>
-        <div style={{textAlign:"center",padding:"36px 36px 24px"}}>
-          <div style={{fontSize:36,marginBottom:10}}>💎</div>
-          <h1 style={{margin:0,fontSize:24,fontFamily:"'Playfair Display',serif",background:"linear-gradient(135deg,#E8C547,#D4A03E)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>
-            Finanças
-          </h1>
-          {subtitle && <div style={{fontSize:12,color:"#555",marginTop:6,letterSpacing:1}}>{subtitle}</div>}
-          {title && <div style={{fontSize:15,color:"#E8E4D9",marginTop:10,fontWeight:600}}>{title}</div>}
+        <div style={{textAlign:"center",padding:"32px 32px 20px"}}>
+          <div style={{fontSize:34,marginBottom:8}}>💎</div>
+          <h1 style={{margin:0,fontSize:22,fontFamily:"'Playfair Display',serif",background:"linear-gradient(135deg,#E8C547,#D4A03E)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>Finanças</h1>
+          {subtitle && <div style={{fontSize:11,color:"#555",marginTop:4,letterSpacing:1.5}}>{subtitle}</div>}
+          {title && <div style={{fontSize:14,color:"#E8E4D9",marginTop:10,fontWeight:600}}>{title}</div>}
         </div>
-        <div style={{padding:"4px 32px 36px",display:"flex",flexDirection:"column",gap:16}}>
-          {children}
-        </div>
+        <div style={{padding:"0 32px 32px",display:"flex",flexDirection:"column",gap:14}}>{children}</div>
       </div>
     </div>
   );
 }
 
-// ─── Views ────────────────────────────────────────────────────────────────────
+function Tabs({ active, onSelect }) {
+  return (
+    <div style={{display:"flex",borderBottom:"1px solid #222218",margin:"0 -32px",marginBottom:4}}>
+      {[["login","Entrar"],["cadastro","Criar conta"]].map(([id,label])=>(
+        <button key={id} type="button" onClick={()=>onSelect(id)} style={{flex:1,padding:"13px",background:"none",border:"none",borderBottom:active===id?"2px solid #E8C547":"2px solid transparent",color:active===id?"#E8C547":"#666",fontSize:14,fontWeight:600,cursor:"pointer",fontFamily:"'DM Sans',sans-serif"}}>
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
-// 1. Login
+// ─── Auth Views ───────────────────────────────────────────────────────────────
 function LoginView({ onLogin, onGo }) {
   const [form, setForm] = useState({ usuario:"", senha:"" });
   const [erro, setErro] = useState("");
   const [loading, setLoading] = useState(false);
+  const f = k => e => setForm(p=>({...p,[k]:e.target.value}));
 
   const handle = async (e) => {
     e.preventDefault();
-    if (!form.usuario || !form.senha) { setErro("Preencha todos os campos."); return; }
+    if (!form.usuario||!form.senha) { setErro("Preencha todos os campos."); return; }
     setLoading(true); setErro("");
-    const user = findUser(form.usuario);
-    if (!user || user.senha !== form.senha) {
-      setLoading(false); setErro("Usuário ou senha incorretos."); return;
-    }
-    setLoading(false);
-    if (user.totp?.enabled) { onGo("verify-2fa", { user }); }
-    else { onLogin(user); }
+    try {
+      const user = await findUser(form.usuario);
+      if (!user) { setErro("Usuário não encontrado."); setLoading(false); return; }
+      const hash = await hashPassword(form.senha);
+      if (user.senha_hash !== hash) { setErro("Senha incorreta."); setLoading(false); return; }
+      setLoading(false);
+      if (user.totp_enabled) onGo("verify-2fa", { user });
+      else onLogin(user);
+    } catch { setErro("Erro ao conectar. Verifique sua internet."); setLoading(false); }
   };
-
-  const f = (k) => (e) => setForm(p => ({...p, [k]:e.target.value}));
 
   return (
     <AuthCard subtitle="GESTÃO FINANCEIRA PESSOAL">
-      <div style={{display:"flex",borderBottom:"1px solid #222218",margin:"0 -32px"}}>
-        {[["login","Entrar"],["cadastro","Criar conta"]].map(([id,label])=>(
-          <button key={id} type="button" onClick={()=>onGo(id)} style={{
-            flex:1,padding:"13px",background:"none",border:"none",
-            borderBottom:id==="login"?"2px solid #E8C547":"2px solid transparent",
-            color:id==="login"?"#E8C547":"#666",fontSize:14,fontWeight:600,
-            cursor:"pointer",fontFamily:"'DM Sans',sans-serif",
-          }}>{label}</button>
-        ))}
-      </div>
-      <form onSubmit={handle} style={{display:"flex",flexDirection:"column",gap:14,marginTop:4}}>
-        <Input label="USUÁRIO" placeholder="seu_usuario" value={form.usuario} onChange={f("usuario")} autoFocus />
-        <Input label="SENHA" type="password" placeholder="••••••••" value={form.senha} onChange={f("senha")} />
+      <Tabs active="login" onSelect={onGo}/>
+      <form onSubmit={handle} style={{display:"flex",flexDirection:"column",gap:13}}>
+        <Input label="USUÁRIO" placeholder="seu_usuario" value={form.usuario} onChange={f("usuario")} autoFocus/>
+        <Input label="SENHA" type="password" placeholder="••••••••" value={form.senha} onChange={f("senha")}/>
         {erro && <Alert>{erro}</Alert>}
         <Btn type="submit" disabled={loading}>{loading?"Verificando...":"Entrar"}</Btn>
-        <div style={{textAlign:"center",fontSize:13,color:"#555"}}>
+        <div style={{textAlign:"center"}}>
           <button type="button" onClick={()=>onGo("forgot")} style={{background:"none",border:"none",color:"#E8C547",cursor:"pointer",fontSize:13,fontFamily:"'DM Sans',sans-serif"}}>
             Esqueci minha senha
           </button>
@@ -137,157 +134,125 @@ function LoginView({ onLogin, onGo }) {
   );
 }
 
-// 2. Cadastro
 function CadastroView({ onGo }) {
-  const [form, setForm] = useState({ nome:"", usuario:"", senha:"", confirmar:"" });
+  const [form, setForm] = useState({ nome:"",usuario:"",senha:"",confirmar:"" });
   const [erros, setErros] = useState({});
   const [loading, setLoading] = useState(false);
+  const f = k => e => { setForm(p=>({...p,[k]:e.target.value})); setErros(p=>({...p,[k]:""})); };
 
-  const validate = () => {
-    const e = {};
-    if (!form.nome.trim()) e.nome = "Nome obrigatório.";
-    if (form.usuario.length < 3) e.usuario = "Mínimo 3 caracteres.";
-    if (/[^a-zA-Z0-9_]/.test(form.usuario)) e.usuario = "Apenas letras, números e _.";
-    if (form.senha.length < 6) e.senha = "Mínimo 6 caracteres.";
-    if (form.senha !== form.confirmar) e.confirmar = "As senhas não coincidem.";
-    return e;
-  };
-
-  const handle = (e) => {
+  const handle = async (e) => {
     e.preventDefault();
-    const e2 = validate();
-    if (Object.keys(e2).length) { setErros(e2); return; }
+    const err = {};
+    if (!form.nome.trim()) err.nome="Nome obrigatório.";
+    if (form.usuario.length<3) err.usuario="Mínimo 3 caracteres.";
+    if (/[^a-zA-Z0-9_]/.test(form.usuario)) err.usuario="Apenas letras, números e _.";
+    if (form.senha.length<6) err.senha="Mínimo 6 caracteres.";
+    if (form.senha!==form.confirmar) err.confirmar="As senhas não coincidem.";
+    if (Object.keys(err).length) { setErros(err); return; }
     setLoading(true);
-    const users = getUsers();
-    if (users.find(u => u.usuario === form.usuario.toLowerCase())) {
-      setErros({ usuario:"Usuário já existe. Escolha outro." }); setLoading(false); return;
-    }
-    // Save draft user, proceed to 2FA setup
-    const novoUser = {
-      id: generateId(), nome: form.nome.trim(),
-      usuario: form.usuario.toLowerCase(), senha: form.senha,
-      totp: null, recoveryCodes: [], criadoEm: new Date().toISOString(),
-    };
-    onGo("setup-2fa", { novoUser });
+    try {
+      const existing = await findUser(form.usuario);
+      if (existing) { setErros({usuario:"Usuário já existe."}); setLoading(false); return; }
+      const senha_hash = await hashPassword(form.senha);
+      const draft = { nome:form.nome.trim(), usuario:form.usuario.toLowerCase(), senha_hash, totp_enabled:false, totp_secret:null, recovery_codes:[] };
+      onGo("setup-2fa", { draft });
+    } catch { setErros({nome:"Erro ao verificar. Tente novamente."}); setLoading(false); }
   };
-
-  const f = (k) => (e) => { setForm(p=>({...p,[k]:e.target.value})); setErros(p=>({...p,[k]:""})); };
 
   return (
     <AuthCard subtitle="GESTÃO FINANCEIRA PESSOAL">
-      <div style={{display:"flex",borderBottom:"1px solid #222218",margin:"0 -32px"}}>
-        {[["login","Entrar"],["cadastro","Criar conta"]].map(([id,label])=>(
-          <button key={id} type="button" onClick={()=>onGo(id)} style={{
-            flex:1,padding:"13px",background:"none",border:"none",
-            borderBottom:id==="cadastro"?"2px solid #E8C547":"2px solid transparent",
-            color:id==="cadastro"?"#E8C547":"#666",fontSize:14,fontWeight:600,
-            cursor:"pointer",fontFamily:"'DM Sans',sans-serif",
-          }}>{label}</button>
-        ))}
-      </div>
-      <form onSubmit={handle} style={{display:"flex",flexDirection:"column",gap:14,marginTop:4}}>
-        <Input label="NOME COMPLETO" placeholder="João Silva" value={form.nome} onChange={f("nome")} error={erros.nome} autoFocus />
-        <Input label="USUÁRIO" placeholder="joao123" value={form.usuario} onChange={f("usuario")} error={erros.usuario} />
-        <Input label="SENHA" type="password" placeholder="Mínimo 6 caracteres" value={form.senha} onChange={f("senha")} error={erros.senha} />
-        <Input label="CONFIRMAR SENHA" type="password" placeholder="••••••••" value={form.confirmar} onChange={f("confirmar")} error={erros.confirmar} />
-        <Btn type="submit" disabled={loading}>{loading?"Criando...":"Próximo →"}</Btn>
+      <Tabs active="cadastro" onSelect={onGo}/>
+      <form onSubmit={handle} style={{display:"flex",flexDirection:"column",gap:13}}>
+        <Input label="NOME COMPLETO" placeholder="João Silva" value={form.nome} onChange={f("nome")} error={erros.nome} autoFocus/>
+        <Input label="USUÁRIO" placeholder="joao123" value={form.usuario} onChange={f("usuario")} error={erros.usuario}/>
+        <Input label="SENHA" type="password" placeholder="Mínimo 6 caracteres" value={form.senha} onChange={f("senha")} error={erros.senha}/>
+        <Input label="CONFIRMAR SENHA" type="password" placeholder="••••••••" value={form.confirmar} onChange={f("confirmar")} error={erros.confirmar}/>
+        <Btn type="submit" disabled={loading}>{loading?"Verificando...":"Próximo →"}</Btn>
       </form>
     </AuthCard>
   );
 }
 
-// 3. Configurar 2FA
-function Setup2FAView({ novoUser, onGo }) {
-  const [secret] = useState(() => generateSecret());
+function Setup2FAView({ draft, onGo }) {
+  const [secret] = useState(generateSecret);
   const [code, setCode] = useState("");
   const [erro, setErro] = useState("");
   const [loading, setLoading] = useState(false);
-  const uri = totpUri(secret, novoUser.usuario);
 
-  const skip = () => {
-    const codes = generateRecoveryCodes();
-    onGo("recovery-codes", { novoUser: { ...novoUser, totp: null, recoveryCodes: codes } });
-  };
+  const skip = () => onGo("recovery-codes", { draft, totpSecret: null });
 
   const confirm = async (e) => {
     e.preventDefault();
-    if (code.replace(/\s/g,"").length !== 6) { setErro("Digite o código de 6 dígitos."); return; }
+    if (code.replace(/\D/g,"").length!==6) { setErro("Digite o código de 6 dígitos."); return; }
     setLoading(true);
     const ok = await verifyTOTP(secret, code);
-    setLoading(false);
-    if (!ok) { setErro("Código inválido. Verifique o app e tente novamente."); return; }
-    const codes = generateRecoveryCodes();
-    onGo("recovery-codes", { novoUser: { ...novoUser, totp: { secret, enabled: true }, recoveryCodes: codes } });
+    if (!ok) { setErro("Código inválido. Tente novamente."); setLoading(false); return; }
+    onGo("recovery-codes", { draft, totpSecret: secret });
   };
 
   return (
-    <AuthCard title="Verificação em 2 etapas" subtitle="OPCIONAL — MAS RECOMENDADO">
-      <Alert type="info">
-        Escaneie o QR code com o <strong>Google Authenticator</strong>, <strong>Authy</strong> ou qualquer app TOTP.
-      </Alert>
-      <div style={{display:"flex",justifyContent:"center",padding:"8px 0"}}>
-        <div style={{background:"#fff",padding:12,borderRadius:12}}>
-          <QRCodeSVG value={uri} size={180} />
+    <AuthCard title="Verificação em 2 etapas" subtitle="OPCIONAL — RECOMENDADO">
+      <Alert type="info">Escaneie com <strong>Google Authenticator</strong> ou <strong>Authy</strong>.</Alert>
+      <div style={{display:"flex",justifyContent:"center",padding:"4px 0"}}>
+        <div style={{background:"#fff",padding:10,borderRadius:10}}>
+          <QRCodeSVG value={totpUri(secret, draft.usuario)} size={170}/>
         </div>
       </div>
       <div>
-        <div style={{fontSize:11,color:"#666",marginBottom:6,letterSpacing:1}}>CÓDIGO MANUAL (se não conseguir escanear)</div>
-        <div style={{
-          background:"#111110",border:"1px solid #333328",borderRadius:8,
-          padding:"10px 14px",fontSize:13,color:"#E8C547",fontFamily:"monospace",
-          letterSpacing:2,wordBreak:"break-all",
-        }}>{secret}</div>
+        <div style={{fontSize:11,color:"#666",marginBottom:5,letterSpacing:1}}>CÓDIGO MANUAL</div>
+        <div style={{background:"#111110",border:"1px solid #333328",borderRadius:8,padding:"9px 13px",fontSize:12,color:"#E8C547",fontFamily:"monospace",letterSpacing:2,wordBreak:"break-all"}}>{secret}</div>
       </div>
-      <form onSubmit={confirm} style={{display:"flex",flexDirection:"column",gap:14}}>
-        <Input
-          label="CÓDIGO DO APLICATIVO (6 dígitos)"
-          placeholder="000000" value={code}
-          onChange={e=>{ setCode(e.target.value); setErro(""); }}
-          error={erro} inputMode="numeric" maxLength={6}
-        />
-        <Btn type="submit" disabled={loading}>{loading?"Verificando...":"Confirmar e ativar 2FA"}</Btn>
+      <form onSubmit={confirm} style={{display:"flex",flexDirection:"column",gap:13}}>
+        <Input label="CÓDIGO DO APP (6 dígitos)" placeholder="000000" value={code}
+          onChange={e=>{setCode(e.target.value.replace(/\D/g,""));setErro("");}}
+          error={erro} inputMode="numeric" maxLength={6}/>
+        <Btn type="submit" disabled={loading}>{loading?"Verificando...":"Ativar 2FA"}</Btn>
         <Btn variant="ghost" onClick={skip}>Pular por agora</Btn>
       </form>
     </AuthCard>
   );
 }
 
-// 4. Códigos de recuperação
-function RecoveryCodesView({ novoUser, onLogin }) {
+function RecoveryCodesView({ draft, totpSecret, onLogin }) {
+  const [codes] = useState(generateRecoveryCodes);
   const [confirmado, setConfirmado] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [erro, setErro] = useState("");
 
-  const finish = () => {
-    const users = getUsers();
-    saveUsers([...users, novoUser]);
-    saveSession(novoUser);
-    onLogin(novoUser);
+  const finish = async () => {
+    setLoading(true);
+    try {
+      const user = await createUser({
+        ...draft,
+        totp_secret: totpSecret,
+        totp_enabled: !!totpSecret,
+        recovery_codes: codes,
+      });
+      onLogin(user);
+    } catch (err) {
+      setErro("Erro ao criar conta. Tente novamente.");
+      setLoading(false);
+    }
   };
 
   return (
-    <AuthCard title="Guarde seus códigos de recuperação" subtitle="IMPORTANTE — LEIA COM ATENÇÃO">
-      <Alert type="info">
-        Use estes códigos caso perca acesso ao seu app autenticador ou esqueça a senha. <strong>Cada código só funciona uma vez.</strong> Guarde em local seguro.
-      </Alert>
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-        {novoUser.recoveryCodes.map((c,i) => (
-          <div key={i} style={{
-            background:"#111110",border:"1px solid #333328",borderRadius:8,
-            padding:"8px 12px",fontFamily:"monospace",fontSize:13,
-            color:"#E8C547",textAlign:"center",letterSpacing:1,
-          }}>{c}</div>
+    <AuthCard title="Guarde seus códigos de recuperação" subtitle="IMPORTANTE">
+      <Alert type="info">Use estes códigos caso perca acesso ao autenticador ou esqueça a senha. <strong>Cada código funciona uma vez.</strong></Alert>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:7}}>
+        {codes.map((c,i)=>(
+          <div key={i} style={{background:"#111110",border:"1px solid #333328",borderRadius:7,padding:"7px 10px",fontFamily:"monospace",fontSize:12,color:"#E8C547",textAlign:"center",letterSpacing:1}}>{c}</div>
         ))}
       </div>
-      <label style={{display:"flex",alignItems:"flex-start",gap:10,cursor:"pointer",fontSize:13,color:"#888"}}>
-        <input type="checkbox" checked={confirmado} onChange={e=>setConfirmado(e.target.checked)}
-          style={{marginTop:2,accentColor:"#E8C547",width:16,height:16}} />
-        Guardei meus códigos de recuperação em local seguro.
+      {erro && <Alert>{erro}</Alert>}
+      <label style={{display:"flex",alignItems:"flex-start",gap:9,cursor:"pointer",fontSize:13,color:"#888"}}>
+        <input type="checkbox" checked={confirmado} onChange={e=>setConfirmado(e.target.checked)} style={{marginTop:2,accentColor:"#E8C547",width:15,height:15}}/>
+        Guardei os códigos em local seguro.
       </label>
-      <Btn disabled={!confirmado} onClick={finish}>Criar conta e entrar</Btn>
+      <Btn disabled={!confirmado||loading} onClick={finish}>{loading?"Criando conta...":"Criar conta e entrar"}</Btn>
     </AuthCard>
   );
 }
 
-// 5. Verificar 2FA (no login)
 function Verify2FAView({ user, onLogin, onGo }) {
   const [code, setCode] = useState("");
   const [erro, setErro] = useState("");
@@ -296,7 +261,7 @@ function Verify2FAView({ user, onLogin, onGo }) {
   const handle = async (e) => {
     e.preventDefault();
     setLoading(true);
-    const ok = await verifyTOTP(user.totp.secret, code);
+    const ok = await verifyTOTP(user.totp_secret, code);
     setLoading(false);
     if (!ok) { setErro("Código inválido ou expirado."); return; }
     onLogin(user);
@@ -305,131 +270,110 @@ function Verify2FAView({ user, onLogin, onGo }) {
   return (
     <AuthCard title={`Olá, ${user.nome.split(" ")[0]}!`} subtitle="VERIFICAÇÃO EM 2 ETAPAS">
       <Alert type="info">Abra seu app autenticador e insira o código de 6 dígitos.</Alert>
-      <form onSubmit={handle} style={{display:"flex",flexDirection:"column",gap:14}}>
-        <Input
-          label="CÓDIGO DO APLICATIVO"
-          placeholder="000000" value={code}
-          onChange={e=>{ setCode(e.target.value.replace(/\D/g,"")); setErro(""); }}
-          error={erro} inputMode="numeric" maxLength={6} autoFocus
-        />
-        <Btn type="submit" disabled={loading || code.length !== 6}>{loading?"Verificando...":"Entrar"}</Btn>
-        <div style={{textAlign:"center"}}>
-          <button type="button" onClick={()=>onGo("use-recovery",{user})} style={{
-            background:"none",border:"none",color:"#666",cursor:"pointer",fontSize:13,
-            fontFamily:"'DM Sans',sans-serif",
-          }}>Usar código de recuperação</button>
-        </div>
-        <div style={{textAlign:"center"}}>
-          <button type="button" onClick={()=>onGo("login")} style={{
-            background:"none",border:"none",color:"#555",cursor:"pointer",fontSize:13,
-            fontFamily:"'DM Sans',sans-serif",
-          }}>← Voltar ao login</button>
+      <form onSubmit={handle} style={{display:"flex",flexDirection:"column",gap:13}}>
+        <Input label="CÓDIGO DO APP" placeholder="000000" value={code}
+          onChange={e=>{setCode(e.target.value.replace(/\D/g,""));setErro("");}}
+          error={erro} inputMode="numeric" maxLength={6} autoFocus/>
+        <Btn type="submit" disabled={loading||code.length!==6}>{loading?"Verificando...":"Entrar"}</Btn>
+        <div style={{textAlign:"center",display:"flex",flexDirection:"column",gap:6}}>
+          <button type="button" onClick={()=>onGo("use-recovery",{user,mode:"login"})} style={{background:"none",border:"none",color:"#666",cursor:"pointer",fontSize:13,fontFamily:"'DM Sans',sans-serif"}}>Usar código de recuperação</button>
+          <button type="button" onClick={()=>onGo("login")} style={{background:"none",border:"none",color:"#555",cursor:"pointer",fontSize:13,fontFamily:"'DM Sans',sans-serif"}}>← Voltar</button>
         </div>
       </form>
     </AuthCard>
   );
 }
 
-// 6. Usar código de recuperação (bypass 2FA ou reset senha)
+function ForgotView({ onGo }) {
+  const [usuario, setUsuario] = useState("");
+  const [erro, setErro] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handle = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const user = await findUser(usuario);
+      if (!user) { setErro("Usuário não encontrado."); setLoading(false); return; }
+      onGo("use-recovery", { user, mode:"reset" });
+    } catch { setErro("Erro de conexão."); setLoading(false); }
+  };
+
+  return (
+    <AuthCard title="Recuperar senha" subtitle="ESQUECI MINHA SENHA">
+      <Alert type="info">Informe seu usuário. Você precisará de um código de recuperação.</Alert>
+      <form onSubmit={handle} style={{display:"flex",flexDirection:"column",gap:13}}>
+        <Input label="SEU USUÁRIO" placeholder="seu_usuario" value={usuario}
+          onChange={e=>{setUsuario(e.target.value);setErro("");}} autoFocus/>
+        {erro && <Alert>{erro}</Alert>}
+        <Btn type="submit" disabled={loading}>{loading?"Buscando...":"Continuar"}</Btn>
+        <div style={{textAlign:"center"}}>
+          <button type="button" onClick={()=>onGo("login")} style={{background:"none",border:"none",color:"#555",cursor:"pointer",fontSize:13,fontFamily:"'DM Sans',sans-serif"}}>← Voltar ao login</button>
+        </div>
+      </form>
+    </AuthCard>
+  );
+}
+
 function UseRecoveryView({ user, mode, onLogin, onGo }) {
   const [code, setCode] = useState("");
   const [novaSenha, setNovaSenha] = useState("");
   const [confirmar, setConfirmar] = useState("");
   const [erro, setErro] = useState("");
-  const [step, setStep] = useState("code"); // "code" | "newpass"
+  const [step, setStep] = useState("code");
+  const [loading, setLoading] = useState(false);
 
-  const checkCode = (e) => {
+  const checkCode = async (e) => {
     e.preventDefault();
     const input = code.trim().toUpperCase();
-    if (!user.recoveryCodes.includes(input)) { setErro("Código inválido ou já utilizado."); return; }
-    if (mode === "login") {
-      // consume code and login
-      const users = getUsers();
-      const updated = users.map(u => u.id === user.id
-        ? { ...u, recoveryCodes: u.recoveryCodes.filter(c => c !== input) }
-        : u
-      );
-      saveUsers(updated);
-      onLogin({ ...user, recoveryCodes: user.recoveryCodes.filter(c => c !== input) });
-    } else {
-      setStep("newpass");
-    }
+    const codes = Array.isArray(user.recovery_codes) ? user.recovery_codes : [];
+    if (!codes.includes(input)) { setErro("Código inválido ou já utilizado."); return; }
+    if (mode==="login") {
+      setLoading(true);
+      try {
+        const updated = await updateUser(user.id, { recovery_codes: codes.filter(c=>c!==input) });
+        onLogin(updated);
+      } catch { setErro("Erro ao conectar."); setLoading(false); }
+    } else { setStep("newpass"); }
   };
 
-  const changePass = (e) => {
+  const changePass = async (e) => {
     e.preventDefault();
-    if (novaSenha.length < 6) { setErro("Mínimo 6 caracteres."); return; }
-    if (novaSenha !== confirmar) { setErro("As senhas não coincidem."); return; }
-    const input = code.trim().toUpperCase();
-    const users = getUsers();
-    const updatedUser = {
-      ...user, senha: novaSenha,
-      recoveryCodes: user.recoveryCodes.filter(c => c !== input),
-    };
-    saveUsers(users.map(u => u.id === user.id ? updatedUser : u));
-    onLogin(updatedUser);
+    if (novaSenha.length<6) { setErro("Mínimo 6 caracteres."); return; }
+    if (novaSenha!==confirmar) { setErro("As senhas não coincidem."); return; }
+    setLoading(true);
+    try {
+      const input = code.trim().toUpperCase();
+      const codes = Array.isArray(user.recovery_codes) ? user.recovery_codes : [];
+      const hash = await hashPassword(novaSenha);
+      const updated = await updateUser(user.id, {
+        senha_hash: hash,
+        recovery_codes: codes.filter(c=>c!==input),
+      });
+      onLogin(updated);
+    } catch { setErro("Erro ao atualizar. Tente novamente."); setLoading(false); }
   };
 
-  if (step === "newpass") return (
+  if (step==="newpass") return (
     <AuthCard title="Criar nova senha" subtitle="RECUPERAÇÃO DE CONTA">
-      <form onSubmit={changePass} style={{display:"flex",flexDirection:"column",gap:14}}>
-        <Input label="NOVA SENHA" type="password" placeholder="Mínimo 6 caracteres" value={novaSenha}
-          onChange={e=>{ setNovaSenha(e.target.value); setErro(""); }} autoFocus />
-        <Input label="CONFIRMAR NOVA SENHA" type="password" placeholder="••••••••" value={confirmar}
-          onChange={e=>{ setConfirmar(e.target.value); setErro(""); }} />
+      <form onSubmit={changePass} style={{display:"flex",flexDirection:"column",gap:13}}>
+        <Input label="NOVA SENHA" type="password" placeholder="Mínimo 6 caracteres" value={novaSenha} onChange={e=>{setNovaSenha(e.target.value);setErro("");}} autoFocus/>
+        <Input label="CONFIRMAR NOVA SENHA" type="password" placeholder="••••••••" value={confirmar} onChange={e=>{setConfirmar(e.target.value);setErro("");}}/>
         {erro && <Alert>{erro}</Alert>}
-        <Btn type="submit">Salvar nova senha</Btn>
+        <Btn type="submit" disabled={loading}>{loading?"Salvando...":"Salvar nova senha"}</Btn>
       </form>
     </AuthCard>
   );
 
   return (
-    <AuthCard title={mode==="login"?"Entrar com código de recuperação":"Recuperar conta"} subtitle="VERIFICAÇÃO DE IDENTIDADE">
-      <Alert type="info">
-        Cole um dos seus códigos de recuperação. Ele será marcado como usado.
-      </Alert>
-      <form onSubmit={checkCode} style={{display:"flex",flexDirection:"column",gap:14}}>
-        <Input
-          label="CÓDIGO DE RECUPERAÇÃO"
-          placeholder="XXXX-XXXX-XXXX" value={code}
-          onChange={e=>{ setCode(e.target.value); setErro(""); }}
-          error={erro} autoFocus
-        />
-        <Btn type="submit">Continuar</Btn>
+    <AuthCard title={mode==="login"?"Entrar com código":"Recuperar conta"} subtitle="CÓDIGO DE RECUPERAÇÃO">
+      <Alert type="info">Cole um dos seus códigos de recuperação. Ele será marcado como usado.</Alert>
+      <form onSubmit={checkCode} style={{display:"flex",flexDirection:"column",gap:13}}>
+        <Input label="CÓDIGO DE RECUPERAÇÃO" placeholder="XXXX-XXXX-XXXX" value={code}
+          onChange={e=>{setCode(e.target.value);setErro("");}} error={erro} autoFocus/>
+        <Btn type="submit" disabled={loading}>{loading?"Verificando...":"Continuar"}</Btn>
         <div style={{textAlign:"center"}}>
-          <button type="button" onClick={()=>onGo("login")} style={{
-            background:"none",border:"none",color:"#555",cursor:"pointer",fontSize:13,fontFamily:"'DM Sans',sans-serif",
-          }}>← Voltar ao login</button>
-        </div>
-      </form>
-    </AuthCard>
-  );
-}
-
-// 7. Esqueci a senha (encontrar usuário)
-function ForgotView({ onGo }) {
-  const [usuario, setUsuario] = useState("");
-  const [erro, setErro] = useState("");
-
-  const handle = (e) => {
-    e.preventDefault();
-    const user = findUser(usuario);
-    if (!user) { setErro("Usuário não encontrado."); return; }
-    onGo("use-recovery", { user, mode: "reset" });
-  };
-
-  return (
-    <AuthCard title="Recuperar senha" subtitle="ESQUECI MINHA SENHA">
-      <Alert type="info">Informe seu usuário. Você precisará de um código de recuperação para redefinir a senha.</Alert>
-      <form onSubmit={handle} style={{display:"flex",flexDirection:"column",gap:14}}>
-        <Input label="SEU USUÁRIO" placeholder="seu_usuario" value={usuario}
-          onChange={e=>{ setUsuario(e.target.value); setErro(""); }} autoFocus />
-        {erro && <Alert>{erro}</Alert>}
-        <Btn type="submit">Continuar</Btn>
-        <div style={{textAlign:"center"}}>
-          <button type="button" onClick={()=>onGo("login")} style={{
-            background:"none",border:"none",color:"#555",cursor:"pointer",fontSize:13,fontFamily:"'DM Sans',sans-serif",
-          }}>← Voltar ao login</button>
+          <button type="button" onClick={()=>onGo("login")} style={{background:"none",border:"none",color:"#555",cursor:"pointer",fontSize:13,fontFamily:"'DM Sans',sans-serif"}}>← Voltar ao login</button>
         </div>
       </form>
     </AuthCard>
@@ -440,24 +384,23 @@ function ForgotView({ onGo }) {
 function AuthRouter({ onLogin }) {
   const [view, setView] = useState("login");
   const [ctx, setCtx] = useState({});
+  const go = (v, extra={}) => { setView(v); setCtx(extra); };
 
-  const go = (v, extra = {}) => { setView(v); setCtx(extra); };
-
-  if (view === "login")         return <LoginView onLogin={onLogin} onGo={go} />;
-  if (view === "cadastro")      return <CadastroView onGo={go} />;
-  if (view === "setup-2fa")     return <Setup2FAView novoUser={ctx.novoUser} onGo={go} />;
-  if (view === "recovery-codes") return <RecoveryCodesView novoUser={ctx.novoUser} onLogin={onLogin} />;
-  if (view === "verify-2fa")    return <Verify2FAView user={ctx.user} onLogin={onLogin} onGo={go} />;
-  if (view === "use-recovery")  return <UseRecoveryView user={ctx.user} mode={ctx.mode||"login"} onLogin={onLogin} onGo={go} />;
-  if (view === "forgot")        return <ForgotView onGo={go} />;
+  if (view==="login")          return <LoginView onLogin={onLogin} onGo={go}/>;
+  if (view==="cadastro")       return <CadastroView onGo={go}/>;
+  if (view==="setup-2fa")      return <Setup2FAView draft={ctx.draft} onGo={go}/>;
+  if (view==="recovery-codes") return <RecoveryCodesView draft={ctx.draft} totpSecret={ctx.totpSecret} onLogin={onLogin}/>;
+  if (view==="verify-2fa")     return <Verify2FAView user={ctx.user} onLogin={onLogin} onGo={go}/>;
+  if (view==="forgot")         return <ForgotView onGo={go}/>;
+  if (view==="use-recovery")   return <UseRecoveryView user={ctx.user} mode={ctx.mode||"login"} onLogin={onLogin} onGo={go}/>;
   return null;
 }
 
-// ─── Dashboard ────────────────────────────────────────────────────────────────
+// ─── Dashboard Components ─────────────────────────────────────────────────────
 function Modal({ open, onClose, title, children }) {
   if (!open) return null;
   return (
-    <div style={{position:"fixed",inset:0,zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(10,10,8,0.7)",backdropFilter:"blur(8px)"}} onClick={onClose}>
+    <div style={{position:"fixed",inset:0,zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(10,10,8,0.75)",backdropFilter:"blur(8px)"}} onClick={onClose}>
       <div onClick={e=>e.stopPropagation()} style={{background:"#1A1A16",border:"1px solid #333328",borderRadius:16,padding:"32px",width:"min(480px,92vw)",maxHeight:"85vh",overflowY:"auto",boxShadow:"0 24px 80px rgba(0,0,0,0.6)"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:24}}>
           <h2 style={{margin:0,fontSize:20,color:"#E8C547",fontFamily:"'Playfair Display',serif"}}>{title}</h2>
@@ -505,50 +448,47 @@ function TxRow({ tx, onEdit, onDelete, showBadge }) {
   );
 }
 
+// ─── Dashboard ────────────────────────────────────────────────────────────────
 function Dashboard({ usuario, onLogout }) {
   const [transactions, setTransactions] = useState([]);
-  const [loading, setLoading]   = useState(true);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [editingTx, setEditingTx] = useState(null);
   const [activeTab, setActiveTab] = useState("dashboard");
   const [filterMonth, setFilterMonth] = useState(new Date().getMonth());
-  const [filterYear, setFilterYear]  = useState(new Date().getFullYear());
-  const [form, setForm] = useState({ tipo:"despesa",categoria:"Alimentação",valor:"",descricao:"",data:new Date().toISOString().split("T")[0] });
-
-  const storageKey = `fin-tx-${usuario.id}`;
+  const [filterYear, setFilterYear] = useState(new Date().getFullYear());
+  const [form, setForm] = useState({tipo:"despesa",categoria:"Alimentação",valor:"",descricao:"",data:new Date().toISOString().split("T")[0]});
 
   useEffect(() => {
-    const data = lsGet(storageKey);
-    if (data) setTransactions(data);
-    setLoading(false);
-  }, [storageKey]);
+    loadTransactions(usuario.id)
+      .then(setTransactions)
+      .catch(()=>{})
+      .finally(()=>setLoading(false));
+  }, [usuario.id]);
 
-  const persist = useCallback((txs) => {
-    setTransactions(txs);
-    lsSet(storageKey, txs);
-  }, [storageKey]);
-
-  const filtered = useMemo(() =>
-    transactions.filter(t => {
+  const filtered = useMemo(()=>
+    transactions.filter(t=>{
       const d = new Date(t.data+"T00:00:00");
       return d.getMonth()===filterMonth && d.getFullYear()===filterYear;
-    }), [transactions, filterMonth, filterYear]);
+    }), [transactions,filterMonth,filterYear]);
 
-  const totalReceitas = useMemo(() => filtered.filter(t=>t.tipo==="receita").reduce((s,t)=>s+t.valor,0),[filtered]);
-  const totalDespesas = useMemo(() => filtered.filter(t=>t.tipo==="despesa").reduce((s,t)=>s+t.valor,0),[filtered]);
+  const totalReceitas = useMemo(()=>filtered.filter(t=>t.tipo==="receita").reduce((s,t)=>s+Number(t.valor),0),[filtered]);
+  const totalDespesas = useMemo(()=>filtered.filter(t=>t.tipo==="despesa").reduce((s,t)=>s+Number(t.valor),0),[filtered]);
   const saldo = totalReceitas - totalDespesas;
 
-  const categoryData = useMemo(() => {
-    const map = {};
-    filtered.filter(t=>t.tipo==="despesa").forEach(t=>{ map[t.categoria]=(map[t.categoria]||0)+t.valor; });
+  const categoryData = useMemo(()=>{
+    const map={};
+    filtered.filter(t=>t.tipo==="despesa").forEach(t=>{map[t.categoria]=(map[t.categoria]||0)+Number(t.valor);});
     return Object.entries(map).map(([name,value])=>({name,value})).sort((a,b)=>b.value-a.value);
   },[filtered]);
 
-  const monthlyData = useMemo(() => {
-    const data = MONTHS.map(m=>({name:m,receitas:0,despesas:0}));
+  const monthlyData = useMemo(()=>{
+    const data=MONTHS.map(m=>({name:m,receitas:0,despesas:0}));
     transactions.filter(t=>new Date(t.data+"T00:00:00").getFullYear()===filterYear).forEach(t=>{
-      const mi = new Date(t.data+"T00:00:00").getMonth();
-      if(t.tipo==="receita") data[mi].receitas+=t.valor; else data[mi].despesas+=t.valor;
+      const mi=new Date(t.data+"T00:00:00").getMonth();
+      if(t.tipo==="receita") data[mi].receitas+=Number(t.valor);
+      else data[mi].despesas+=Number(t.valor);
     });
     return data;
   },[transactions,filterYear]);
@@ -560,21 +500,46 @@ function Dashboard({ usuario, onLogout }) {
   };
   const openEdit = (tx) => {
     setEditingTx(tx);
-    setForm({tipo:tx.tipo,categoria:tx.categoria,valor:String(tx.valor),descricao:tx.descricao,data:tx.data});
+    setForm({tipo:tx.tipo,categoria:tx.categoria,valor:String(tx.valor),descricao:tx.descricao||"",data:tx.data});
     setModalOpen(true);
   };
-  const handleSave = () => {
-    if(!form.valor||isNaN(parseFloat(form.valor))) return;
-    const entry = {...form,valor:parseFloat(form.valor),id:editingTx?editingTx.id:Date.now().toString(36)};
-    persist(editingTx ? transactions.map(t=>t.id===editingTx.id?entry:t) : [...transactions,entry]);
-    setModalOpen(false);
+
+  const handleSave = async () => {
+    if (!form.valor||isNaN(parseFloat(form.valor))) return;
+    setSaving(true);
+    const entry = {
+      id: editingTx ? editingTx.id : generateId(),
+      user_id: usuario.id,
+      tipo: form.tipo, categoria: form.categoria,
+      valor: parseFloat(form.valor),
+      descricao: form.descricao, data: form.data,
+    };
+    try {
+      await upsertTransaction(entry);
+      setTransactions(prev =>
+        editingTx ? prev.map(t=>t.id===editingTx.id?entry:t) : [...prev, entry]
+      );
+      setModalOpen(false);
+    } catch { alert("Erro ao salvar. Verifique sua conexão."); }
+    setSaving(false);
   };
-  const handleDelete = (id) => persist(transactions.filter(t=>t.id!==id));
+
+  const handleDelete = async (id) => {
+    try {
+      await deleteTransaction(id);
+      setTransactions(prev=>prev.filter(t=>t.id!==id));
+      if (modalOpen) setModalOpen(false);
+    } catch { alert("Erro ao excluir."); }
+  };
 
   const iStyle = {...BASE_INPUT};
   const btnS = (bg,color)=>({background:bg,color,border:"none",borderRadius:8,padding:"10px 20px",fontSize:14,cursor:"pointer",fontWeight:600,fontFamily:"'DM Sans',sans-serif",transition:"all 0.2s"});
 
-  if(loading) return <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:"#0E0E0C",color:"#E8C547",fontFamily:"'Playfair Display',serif",fontSize:24}}>Carregando...</div>;
+  if (loading) return (
+    <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:"#0E0E0C",color:"#E8C547",fontFamily:"'Playfair Display',serif",fontSize:22}}>
+      Carregando...
+    </div>
+  );
 
   return (
     <div style={{minHeight:"100vh",background:"#0E0E0C",color:"#E8E4D9",fontFamily:"'DM Sans',sans-serif"}}>
@@ -583,7 +548,7 @@ function Dashboard({ usuario, onLogout }) {
       {/* Header */}
       <div style={{background:"linear-gradient(180deg,#161612,#0E0E0C)",borderBottom:"1px solid #222218",padding:"16px 32px",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12}}>
         <div>
-          <h1 style={{margin:0,fontSize:26,fontFamily:"'Playfair Display',serif",background:"linear-gradient(135deg,#E8C547,#D4A03E)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>Finanças</h1>
+          <h1 style={{margin:0,fontSize:24,fontFamily:"'Playfair Display',serif",background:"linear-gradient(135deg,#E8C547,#D4A03E)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>Finanças</h1>
           <div style={{fontSize:11,color:"#555",marginTop:2,letterSpacing:1}}>GESTÃO FINANCEIRA PESSOAL</div>
         </div>
         <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
@@ -600,9 +565,9 @@ function Dashboard({ usuario, onLogout }) {
           <div style={{display:"flex",alignItems:"center",gap:10,paddingLeft:12,borderLeft:"1px solid #222218"}}>
             <div style={{textAlign:"right"}}>
               <div style={{fontSize:13,fontWeight:600,color:"#E8E4D9"}}>{usuario.nome}</div>
-              <div style={{fontSize:11,color:"#555",display:"flex",alignItems:"center",gap:4}}>
+              <div style={{fontSize:11,color:"#555",display:"flex",alignItems:"center",gap:4,justifyContent:"flex-end"}}>
                 @{usuario.usuario}
-                {usuario.totp?.enabled && <span title="2FA ativo" style={{color:"#E8C547",fontSize:10}}>🔐</span>}
+                {usuario.totp_enabled && <span title="2FA ativo" style={{color:"#E8C547"}}>🔐</span>}
               </div>
             </div>
             <button onClick={onLogout} style={{...btnS("#1A1A16","#888"),border:"1px solid #333328",fontSize:13,padding:"8px 12px"}}>Sair</button>
@@ -662,15 +627,12 @@ function Dashboard({ usuario, onLogout }) {
             </div>
             <div style={{background:"#1A1A16",border:"1px solid #333328",borderRadius:14,padding:24}}>
               <h3 style={{margin:"0 0 16px",fontSize:14,color:"#888",letterSpacing:2,textTransform:"uppercase"}}>Últimos Lançamentos</h3>
-              {filtered.length===0 ? (
-                <div style={{color:"#555",textAlign:"center",padding:40,fontSize:14}}>Nenhum lançamento neste mês. Clique em "+ Novo Lançamento" para começar.</div>
-              ) : (
-                <div style={{display:"flex",flexDirection:"column",gap:6}}>
-                  {[...filtered].sort((a,b)=>b.data.localeCompare(a.data)).slice(0,8).map(tx=>(
-                    <TxRow key={tx.id} tx={tx} onEdit={openEdit} onDelete={handleDelete}/>
-                  ))}
-                </div>
-              )}
+              {filtered.length===0
+                ? <div style={{color:"#555",textAlign:"center",padding:40,fontSize:14}}>Nenhum lançamento neste mês. Clique em "+ Novo Lançamento" para começar.</div>
+                : <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                    {[...filtered].sort((a,b)=>b.data.localeCompare(a.data)).slice(0,8).map(tx=><TxRow key={tx.id} tx={tx} onEdit={openEdit} onDelete={handleDelete}/>)}
+                  </div>
+              }
             </div>
           </>
         ) : (
@@ -679,13 +641,12 @@ function Dashboard({ usuario, onLogout }) {
               <h3 style={{margin:0,fontSize:14,color:"#888",letterSpacing:2,textTransform:"uppercase"}}>Todos os Lançamentos — {MONTHS[filterMonth]} {filterYear}</h3>
               <div style={{fontSize:13,color:"#666"}}>{filtered.length} itens</div>
             </div>
-            {filtered.length===0 ? <div style={{color:"#555",textAlign:"center",padding:60,fontSize:14}}>Nenhum lançamento encontrado neste período.</div> : (
-              <div style={{display:"flex",flexDirection:"column",gap:4}}>
-                {[...filtered].sort((a,b)=>b.data.localeCompare(a.data)).map(tx=>(
-                  <TxRow key={tx.id} tx={tx} onEdit={openEdit} onDelete={handleDelete} showBadge/>
-                ))}
-              </div>
-            )}
+            {filtered.length===0
+              ? <div style={{color:"#555",textAlign:"center",padding:60,fontSize:14}}>Nenhum lançamento encontrado neste período.</div>
+              : <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                  {[...filtered].sort((a,b)=>b.data.localeCompare(a.data)).map(tx=><TxRow key={tx.id} tx={tx} onEdit={openEdit} onDelete={handleDelete} showBadge/>)}
+                </div>
+            }
             <div style={{display:"flex",justifyContent:"flex-end",gap:24,marginTop:20,padding:"16px 16px 0",borderTop:"1px solid #222218",flexWrap:"wrap"}}>
               <div style={{fontSize:13}}><span style={{color:"#888"}}>Receitas: </span><span style={{color:"#6B8F71",fontWeight:700}}>{formatCurrency(totalReceitas)}</span></div>
               <div style={{fontSize:13}}><span style={{color:"#888"}}>Despesas: </span><span style={{color:"#C17B35",fontWeight:700}}>{formatCurrency(totalDespesas)}</span></div>
@@ -695,6 +656,7 @@ function Dashboard({ usuario, onLogout }) {
         )}
       </div>
 
+      {/* Transaction Modal */}
       <Modal open={modalOpen} onClose={()=>setModalOpen(false)} title={editingTx?"Editar Lançamento":"Novo Lançamento"}>
         <div style={{display:"flex",flexDirection:"column",gap:16}}>
           <div style={{display:"flex",gap:8}}>
@@ -722,10 +684,14 @@ function Dashboard({ usuario, onLogout }) {
           </div>
           <div style={{display:"flex",gap:10,marginTop:8}}>
             <button onClick={()=>setModalOpen(false)} style={{...btnS("transparent","#888"),border:"1px solid #333328",flex:1}}>Cancelar</button>
-            <button onClick={handleSave} style={{...btnS("#E8C547","#0E0E0C"),flex:1}}>{editingTx?"Salvar":"Adicionar"}</button>
+            <button onClick={handleSave} disabled={saving} style={{...btnS("#E8C547","#0E0E0C"),flex:1,opacity:saving?0.6:1}}>
+              {saving?"Salvando...":(editingTx?"Salvar":"Adicionar")}
+            </button>
           </div>
           {editingTx && (
-            <button onClick={()=>{handleDelete(editingTx.id);setModalOpen(false);}} style={{...btnS("transparent","#e07070"),border:"1px solid #441111",width:"100%",marginTop:4}}>Excluir Lançamento</button>
+            <button onClick={()=>handleDelete(editingTx.id)} style={{...btnS("transparent","#e07070"),border:"1px solid #441111",width:"100%",marginTop:4}}>
+              Excluir Lançamento
+            </button>
           )}
         </div>
       </Modal>
@@ -740,6 +706,6 @@ export default function App() {
   const handleLogin = (user) => { saveSession(user); setUsuario(user); };
   const handleLogout = () => { clearSession(); setUsuario(null); };
 
-  if (!usuario) return <AuthRouter onLogin={handleLogin} />;
-  return <Dashboard usuario={usuario} onLogout={handleLogout} />;
+  if (!usuario) return <AuthRouter onLogin={handleLogin}/>;
+  return <Dashboard usuario={usuario} onLogout={handleLogout}/>;
 }

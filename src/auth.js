@@ -1,32 +1,93 @@
-// ─── Storage ──────────────────────────────────────────────────────────────────
-export function lsGet(key) {
-  try { return JSON.parse(localStorage.getItem(key)); } catch { return null; }
+import { supabase } from "./supabase.js";
+
+// ─── Password hashing (SHA-256 via Web Crypto) ────────────────────────────────
+export async function hashPassword(password) {
+  const buf = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(password)
+  );
+  return Array.from(new Uint8Array(buf))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 }
-export function lsSet(key, value) {
-  try { localStorage.setItem(key, JSON.stringify(value)); } catch { }
+
+// ─── Session (localStorage — só para não pedir login a cada refresh) ──────────
+export function getSession() {
+  try { return JSON.parse(localStorage.getItem("fin-session")); } catch { return null; }
+}
+export function saveSession(user) {
+  localStorage.setItem("fin-session", JSON.stringify(user));
+}
+export function clearSession() {
+  localStorage.removeItem("fin-session");
 }
 
-export function getUsers() { return lsGet("fin-users") || []; }
-export function saveUsers(users) { lsSet("fin-users", users); }
+// ─── User CRUD (Supabase) ─────────────────────────────────────────────────────
+export async function findUser(username) {
+  const { data } = await supabase
+    .from("users")
+    .select("*")
+    .eq("usuario", username.toLowerCase().trim())
+    .maybeSingle();
+  return data ?? null;
+}
 
-export function getSession() { return lsGet("fin-session"); }
-export function saveSession(user) { lsSet("fin-session", user); }
-export function clearSession() { localStorage.removeItem("fin-session"); }
+export async function createUser(user) {
+  const { data, error } = await supabase
+    .from("users")
+    .insert([user])
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
 
-// ─── TOTP (RFC 6238 / Google Authenticator compatible) ───────────────────────
+export async function updateUser(id, updates) {
+  const { data, error } = await supabase
+    .from("users")
+    .update(updates)
+    .eq("id", id)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+// ─── Transactions (Supabase) ──────────────────────────────────────────────────
+export async function loadTransactions(userId) {
+  const { data, error } = await supabase
+    .from("transactions")
+    .select("*")
+    .eq("user_id", userId)
+    .order("data", { ascending: false });
+  if (error) throw error;
+  return data ?? [];
+}
+
+export async function upsertTransaction(tx) {
+  const { error } = await supabase
+    .from("transactions")
+    .upsert([tx], { onConflict: "id" });
+  if (error) throw error;
+}
+
+export async function deleteTransaction(id) {
+  const { error } = await supabase
+    .from("transactions")
+    .delete()
+    .eq("id", id);
+  if (error) throw error;
+}
+
+// ─── TOTP (RFC 6238 — Google Authenticator) ───────────────────────────────────
 const B32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 
 export function generateSecret(bytes = 20) {
   const buf = crypto.getRandomValues(new Uint8Array(bytes));
-  let out = "";
-  let bits = 0, val = 0;
+  let out = "", bits = 0, val = 0;
   for (const b of buf) {
-    val = (val << 8) | b;
-    bits += 8;
-    while (bits >= 5) {
-      out += B32[(val >>> (bits - 5)) & 31];
-      bits -= 5;
-    }
+    val = (val << 8) | b; bits += 8;
+    while (bits >= 5) { out += B32[(val >>> (bits - 5)) & 31]; bits -= 5; }
   }
   if (bits > 0) out += B32[(val << (5 - bits)) & 31];
   return out;
@@ -34,13 +95,11 @@ export function generateSecret(bytes = 20) {
 
 function b32Decode(s) {
   s = s.toUpperCase().replace(/=+$/, "").replace(/\s/g, "");
-  const out = [];
-  let bits = 0, val = 0;
+  const out = []; let bits = 0, val = 0;
   for (const c of s) {
     const idx = B32.indexOf(c);
     if (idx < 0) continue;
-    val = (val << 5) | idx;
-    bits += 5;
+    val = (val << 5) | idx; bits += 5;
     if (bits >= 8) { out.push((val >>> (bits - 8)) & 0xff); bits -= 8; }
   }
   return new Uint8Array(out);
@@ -48,8 +107,7 @@ function b32Decode(s) {
 
 async function hotp(secret, counter) {
   const key = await crypto.subtle.importKey(
-    "raw", b32Decode(secret),
-    { name: "HMAC", hash: "SHA-1" }, false, ["sign"]
+    "raw", b32Decode(secret), { name: "HMAC", hash: "SHA-1" }, false, ["sign"]
   );
   const msg = new Uint8Array(8);
   let c = counter;
@@ -75,18 +133,13 @@ export function totpUri(secret, username) {
 // ─── Recovery codes ───────────────────────────────────────────────────────────
 function randHex(n) {
   return Array.from(crypto.getRandomValues(new Uint8Array(n)))
-    .map(b => b.toString(16).padStart(2, "0")).join("").toUpperCase();
+    .map((b) => b.toString(16).padStart(2, "0")).join("").toUpperCase();
 }
 
 export function generateRecoveryCodes(count = 8) {
   return Array.from({ length: count }, () => `${randHex(4)}-${randHex(4)}-${randHex(4)}`);
 }
 
-// ─── User helpers ─────────────────────────────────────────────────────────────
 export function generateId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
-}
-
-export function findUser(username) {
-  return getUsers().find(u => u.usuario === username.toLowerCase().trim()) || null;
 }
