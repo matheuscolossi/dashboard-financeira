@@ -53,6 +53,37 @@ export async function updateUser(id, updates) {
   return data;
 }
 
+// ─── Admin (Supabase) ─────────────────────────────────────────────────────────
+export async function loadAllUsers() {
+  const { data, error } = await supabase
+    .from("users")
+    .select("id, nome, usuario, is_admin, totp_enabled, recovery_codes, criado_em")
+    .order("criado_em", { ascending: false });
+  if (error) throw error;
+  return data ?? [];
+}
+
+export async function loadAllTransactionCounts() {
+  const { data } = await supabase.from("transactions").select("user_id");
+  const counts = {};
+  data?.forEach(t => { counts[t.user_id] = (counts[t.user_id] || 0) + 1; });
+  return counts;
+}
+
+export async function deleteUserById(id) {
+  const { error } = await supabase.from("users").delete().eq("id", id);
+  if (error) throw error;
+}
+
+export async function setAdminStatus(id, isAdmin) {
+  return updateUser(id, { is_admin: isAdmin });
+}
+
+export async function resetUserPassword(id, novaSenha) {
+  const hash = await hashPassword(novaSenha);
+  return updateUser(id, { senha_hash: hash });
+}
+
 // ─── Transactions (Supabase) ──────────────────────────────────────────────────
 export async function loadTransactions(userId) {
   const { data, error } = await supabase
